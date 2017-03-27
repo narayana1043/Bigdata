@@ -1,0 +1,4 @@
+---
+- name: install the R package
+  apt: name=r-base update_cache=yes state=latest
+  become: yes

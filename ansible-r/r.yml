@@ -1,0 +1,5 @@
+---
+- hosts: R_hosts
+
+  roles:
+    - r

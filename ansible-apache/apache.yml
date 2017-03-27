@@ -1,0 +1,6 @@
+---
+- hosts: apache #comment: apache is the group name we just defined
+  become: yes #comment: this operation needs privilege access
+  tasks:
+    - name: install apache2 # text description
+      apt: name=apache2 update_cache=yes state=latest
