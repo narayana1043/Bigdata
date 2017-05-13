@@ -1,0 +1,176 @@
+Red Shift:
+-----------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------
+
+Important things for performance:
+
+-Sort Key
+-Dist key
+-All big operations have to happen in parallel to get benefitted(gives scalability)'
+
+what we want in parallel?
+-loading in parallel
+-backups in parallel
+-restores are also in parallel
+-when cluster is resized, the computes nodes of the old cluster transfer the data to the new nodes in parallel
+
+Copies of data for backup:
+-primary copy on compute nodes
+-copy on the cluster itself
+-backup in S3 (continuous and automatic backup)
+
+10 ghz network between nodes
+
+security:
+-leader node is the only point of contact.
+-compute nodes are not directly accessible because they has data
+-support encryption for the data that moves in and out
+-support encryption for the data at rest in the compute nodes
+
+Recommendations (Best Practices):
+
+ingestion
+----------------------------------------------------
+- we want the loading to happen in parallel as much as possible and leverage all the compute nodes as much as possible.
+- stage the data in S3 and use copy cmd to load the data
+- use sort keys to load the data in sorted order
+-  gzip the data when it is large before using the copy command
+-  try to avoid as much as possible row inserts when loading data
+-  don't support upsert currently
+-  redshift doesn't enforce primary key concern, if we copy the data twice we may end up duplicating
+-  when running resource intense commands like COPY or VACUUM we can increase the memory available by setting down the work load manager count. ex: set wlm_query_slot_count to 3
+-  when doing big changes to data, like bring in a lot of data it is better to run ANALYZE command to ensure table statistics are current.
+-  If we run into problems while running the COPY cmd. STL_LOAD_ERRORS discovers the errors that occurred during the specific loads. we can also adjust the MAX_ERRORS as needed. we can also look up aws redshift console
+-  check character set: Support UTF8 up to 3 bytes long. Some special characters are not supported. check docs.
+
+Copy CMD
+---------------------------------------------------------
+- COPY cmd needs authorization to access data from AWS resources (S3, EMR, Dynamo DB, EC2). You can provide that authorization by referencing an AWS Identity and Access management (IAM) role-based access control. Use IAM role for increased security and flexibility, we recommend using IAM role-based access control
+- http://docs.aws.amazon.com/redshift/latest/dg/copy-parameters-authorization.html
+- Permissions to Access Other AWS Resources:: http://docs.aws.amazon.com/redshift/latest/dg/copy-usage_notes-access-permissions.html#copy-usage_notes-iam-permissions
+- Note: If you receive the error message S3ServiceException: Access Denied, when running a COPY, UNLOAD, or CREATE LIBRARY command, your cluster doesn’t have proper access permissions for Amazon S3.
+
+Create Table
+------------------------------------------------------------
+- http://docs.aws.amazon.com/redshift/latest/dg/tutorial-tuning-tables-create-test-data.html
+- star schema benchmark (SSB)
+
+Establish Baseline:
+------------------------------------------------------------
+TODO:: Discuss with Boom
+
+
+Sort Key:
+-----------------------------------------------------------
+- Goal: To skip over data blocks to minimize IO. Within the redshift clusters the min and max values are maintained for data stored in a particular node. This allows to skip over an entire data block when we know on what we are filtering. 
+- Pick those columns that often get filtered.
+- Typically a good sort key is "TimeStamp" because in BI applications their is a tendency to pick the data that came in recently(last day or last week).
+- In terms of trade-off when we a pick a sort key it is good to sort the data before we inject the data. The rows that are added later are temporarily in an unsorted location and the "VACUUM" cmd will get it sorted with a overhead.
+- In this step, you choose sort keys for the SSB tables based on these best practices:
+      - If recent data is queried most frequently, specify the timestamp column as the leading column for the sort key.
+
+      - If you do frequent range filtering or equality filtering on one column, specify that column as the sort key.
+      - If you frequently join a (dimension) table, specify the join column as the sort key.
+
+Distribution Key:
+-----------------------------------------------------------
+- Important to keep things going parallel to engage all the node in all the operations
+- Distribute the data as evenly as possible among the nodes
+- Minimize the data movement among the nodes when executing a query. For example: when we have to join and aggregate it is better to have them on same node than different in order to avoid network overhead.
+- Best Patrice: Look at join clauses and figure out what we typically join on(dist key = join key) 
+- If there are multiple joins, use the foreign key of the largest dimensions as distribution key
+- If we have aggregates and heavy on joins Consider using group by column as distribution key() so that we can do operations with in the node.
+- if not sure of one don't specify as redshift uses round-robin way
+- check the distribution of data on nodes
+- Types: (key distribution, ALL distribution, Even distribution)
+- TO SELECT Distribution styles
+   - The first goal is to distribute the data so that the matching rows from joining tables are collocated, which means that the matching rows from joining tables are located on the same node slice.
+   - Each table can have only one distribution key, which means that only one pair of tables in the schema can be collocated on their common columns. The central fact table is the clear first choice. For the second table in the pair, choose the largest dimension that commonly joins the fact table. 
+- http://docs.aws.amazon.com/redshift/latest/dg/tutorial-tuning-tables-distribution.html
+
+Compression Encodings:
+------------------------------------------------------------
+Compression is a column-level operation that reduces the size of data when it is stored. Compression conserves storage space and reduces the size of data that is read from storage, which reduces the amount of disk I/O and therefore improves the query performance.
+- default: raw uncompressed format
+- can define compression type or encoding when we create a table
+- http://docs.aws.amazon.com/redshift/latest/dg/tutorial-tuning-tables-compression.html
+- Note:: (leaving it to default is preferred)
+   - Apply automatic compression to the SSB tables. By default, the COPY command automatically applies compression encodings when you load data into an empty table that has no compression encodings other than RAW encoding. 
+
+Important things to figure out:
+------------------------------------------------------------
+- How many nodes we need based the size of data
+- what are the sort keys 
+- what are the distribution keys
+- In reality the queries and workload are fairly complex, so we have to take into consideration many factors. Typically when we think about sort and distribution keys we look for all the filtering requirements and join requirements because these determine how we distribute the stuff. 
+- we have to look at the size of table, because the smaller tables can be shifted on nodes but the bigger table have to be distributed.
+- we have to look into cardinality of the column because if something has a large skew then we don't want to distribute on it, but if something is like a primary key then it is better to distribute on it. 
+
+
+distribution across nodes
+----------------------------------------------------------------
+- Query against svv_diskusage to check the distribution of data across nodes
+
+
+Other things that impact query performance
+----------------------------------------------------------------
+- sort key and distribution key will have impact on query performance
+- don't use char data type for time stamp. it is not efficient
+- Red shift does not enforce constraints on primary key, foreign key, unique values but the optimizer uses it
+- specify redundant predicate on the sort column
+
+
+Work load manager settings (WLM)
+----------------------------------------------------------------
+WLM allows:
+- Increase query concurrency up to 15 (default =5)
+- define user groups and query groups
+   - with user groups queueing of query is according to which group the user belongs
+   - with query groups the queries are grouped into different groups.  Ex: long running and short running groups. Reason is e don't want tiny query to get stacked behind in the queue
+
+
+Best Practices for Designing Tables
+----------------------------------------------------------------
+- http://docs.aws.amazon.com/redshift/latest/dg/c_designing-queries-best-practices.html
+
+Best Practices for Loading Tables
+----------------------------------------------------------------
+- http://docs.aws.amazon.com/redshift/latest/dg/c_loading-data-best-pratices.html
+
+RedShift Developer Guide
+----------------------------------------------------------------
+http://aws.amazon.com/documentation/redshift
+
+
+
+
+Note:
+- S3 in US-east may have a lag from loaded and to when it is available, so look up the "listing objects keys" sections of s3 guide to verify all the files are available.
+- or get the data into redshift and query redshift after the load. this query returns entries for loading the tables in the TICKIT database
+- there will be some tension in which key would be better because we may not be able to optimize for all the business queries but we must be able to do it most critical
+- increasing the concurrency may not always help due to resource contention. Overall throughput increases when we reduce the concurrency.
+
+
+
+
+__________________________________________________________________________________________________________________________________________
+QUESTIONS
+_____________________________________________________________________
+
+1. Do I have to change any permissions when I upload files into AWS S3 so that you can also access. What about encryption?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
